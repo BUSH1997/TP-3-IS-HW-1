@@ -5,7 +5,7 @@ WORKDIR /app
 RUN go build ./main.go
 
 FROM ubuntu:20.04
-EXPOSE 8080
+EXPOSE 8000
 
 WORKDIR /usr/src/app
 COPY . .

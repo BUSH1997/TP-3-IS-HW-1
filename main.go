@@ -7,36 +7,22 @@ import (
 	"net/url"
 )
 
-type ProxyRequest struct {
-	Method string
-	Host string
-	UserAgent string
-	Accept string
-	ProxyConnection string
-}
-
 func main() {
 	http.HandleFunc("/", ProxyHandler)
 	fmt.Println("Server is listening...")
-	http.ListenAndServe(":8080", nil)
+	http.ListenAndServe(":8000", nil)
 }
 
 func ProxyHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Println(r.Method)
-	fmt.Println(r.Header.Get("HOST"))
-	fmt.Println(r.Header.Get("User-Agent"))
-	fmt.Println(r.Header.Get("Accept"))
-	fmt.Println(r.Header.Get("Proxy-Connection"))
-	fmt.Println(r.RequestURI)
+	r.Header.Del("Proxy-Connection")
+	r.RequestURI = ""
 
-	proxyRequest := ProxyRequest{
-		Method:          r.Method,
-		Host:            r.RequestURI,
-		UserAgent:       r.Header.Get("User-Agent"),
-		Accept:          r.Header.Get("Accept"),
+	rowURL := r.URL.String()
+	if rowURL[len(rowURL) - 1] == '/' {
+		r.URL, _ = url.Parse(rowURL[:len(rowURL) - 1])
 	}
 
-	resp, err := runGetFullReq(proxyRequest)
+	resp, err := runProxyReq(r)
 	if err != nil {
 		panic(err)
 	}
@@ -44,7 +30,26 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	copyHeaders(w.Header(), resp.Header)
-	io.Copy(w, resp.Body)
+	w.WriteHeader(resp.StatusCode)
+	_, err = io.Copy(w, resp.Body)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func runProxyReq(r *http.Request) (*http.Response, error) {
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	resp, err := client.Do(r)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp, nil
 }
 
 func copyHeaders(dst, src http.Header) {
@@ -53,26 +58,4 @@ func copyHeaders(dst, src http.Header) {
 			dst.Add(k, v)
 		}
 	}
-}
-
-func runGetFullReq(request ProxyRequest) (*http.Response, error) {
-
-	req := &http.Request{
-		Method: request.Method,
-		Header: http.Header{
-			"User-Agent": {request.UserAgent},
-			"Accept": {request.Accept},
-			"Host": {request.Host},
-		},
-	}
-
-	req.URL, _ = url.Parse(request.Host)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		fmt.Println("error happend", err)
-		return nil, err
-	}
-
-	return resp, nil
 }
