@@ -1,61 +1,101 @@
 package main
 
 import (
-	"fmt"
+	"errors"
 	"io"
+	"log"
+	"net"
 	"net/http"
-	"net/url"
+	"time"
 )
 
+type ProxyHandler struct {
+}
+
+func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodConnect {
+		handleHTTPS(w, r)
+	}
+}
+
 func main() {
-	http.HandleFunc("/", ProxyHandler)
-	fmt.Println("Server is listening...")
-	http.ListenAndServe(":8000", nil)
-}
+	handler := &ProxyHandler{}
 
-func ProxyHandler(w http.ResponseWriter, r *http.Request) {
-	r.Header.Del("Proxy-Connection")
-	r.RequestURI = ""
-
-	rowURL := r.URL.String()
-	if rowURL[len(rowURL) - 1] == '/' {
-		r.URL, _ = url.Parse(rowURL[:len(rowURL) - 1])
+	server := http.Server{
+		Addr:    ":8000",
+		Handler: handler,
 	}
 
-	resp, err := runProxyReq(r)
-	if err != nil {
-		panic(err)
-	}
-
-	defer resp.Body.Close()
-
-	copyHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	_, err = io.Copy(w, resp.Body)
-	if err != nil {
-		panic(err)
+	if err := server.ListenAndServe(); err != nil {
+		log.Fatalf(err.Error())
 	}
 }
 
-func runProxyReq(r *http.Request) (*http.Response, error) {
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+func handleHTTPS(w http.ResponseWriter, r *http.Request) {
+	destConn, err := connectHandshake(w, r)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		log.Fatal("cannot establish connection")
 	}
 
-	resp, err := client.Do(r)
+	w.WriteHeader(http.StatusOK)
+	_, err = w.Write([]byte("Connection established"))
 	if err != nil {
+		log.Fatal("cannot write data")
+	}
+
+	srcConn, err := connectHijacker(w)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		log.Fatal("cannot establish connection")
+	}
+
+	go transferData(destConn, srcConn)
+	go transferData(srcConn, destConn)
+}
+
+func connectHandshake(w http.ResponseWriter, r *http.Request) (net.Conn, error) {
+	conn, err := net.DialTimeout("tcp", r.Host, 10*time.Second)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return nil, err
 	}
 
-	return resp, nil
+	return conn, nil
 }
 
-func copyHeaders(dst, src http.Header) {
-	for k, vv := range src {
-		for _, v := range vv {
-			dst.Add(k, v)
+func connectHijacker(w http.ResponseWriter) (net.Conn, error) {
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "hijacking not supported", http.StatusInternalServerError)
+		return nil, errors.New("hijacking not supported")
+	}
+
+	conn, _, err := hijacker.Hijack()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return nil, err
+	}
+
+	return conn, nil
+}
+
+func transferData(dest io.WriteCloser, src io.ReadCloser) {
+	defer func(dest io.WriteCloser) {
+		err := dest.Close()
+		if err != nil {
+
 		}
+	}(dest)
+	defer func(src io.ReadCloser) {
+		err := src.Close()
+		if err != nil {
+
+		}
+	}(src)
+
+	_, err := io.Copy(dest, src)
+	if err != nil {
+		return
 	}
 }
